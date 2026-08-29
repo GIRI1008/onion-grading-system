@@ -1,20 +1,23 @@
 import streamlit as st
 import numpy as np
 import torch
-
-# -------------------------------------------------------------
-# CRITICAL FIX: Bypass PyTorch 2.6+ / Python 3.14 weights_only restriction
-# -------------------------------------------------------------
-_original_torch_load = torch.load
-
-def _patched_torch_load(*args, **kwargs):
-    kwargs['weights_only'] = False
-    return _original_torch_load(*args, **kwargs)
-
-torch.load = _patched_torch_load
-# -------------------------------------------------------------
-
 from PIL import Image, ImageDraw
+
+# -------------------------------------------------------------
+# DIRECT FIX: Override Ultralytics internal loader
+# -------------------------------------------------------------
+import ultralytics.nn.tasks
+import ultralytics.utils.patches
+
+def custom_torch_safe_load(weight):
+    # Force weights_only=False to load full custom YOLO architecture
+    ckpt = torch.load(weight, map_location="cpu", weights_only=False)
+    return ckpt, weight
+
+ultralytics.nn.tasks.torch_safe_load = custom_torch_safe_load
+ultralytics.utils.patches.torch_load = lambda *args, **kwargs: torch.load(*args, **{**kwargs, "weights_only": False})
+# -------------------------------------------------------------
+
 from ultralytics import YOLO
 
 st.set_page_config(page_title="AgriLens: Onion Grading AI", page_icon="🧅", layout="centered")
@@ -40,7 +43,7 @@ uploaded_file = st.camera_input("Take a photo of onions") or st.file_uploader("O
 if uploaded_file is not None:
     img = Image.open(uploaded_file).convert("RGB")
     
-    # Scale image to 640px max dimension
+    # Resize keeping aspect ratio (max dimension 640)
     w, h = img.size
     scale = min(640 / w, 640 / h)
     small_img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
@@ -57,7 +60,7 @@ if uploaded_file is not None:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             box_w, box_h = x2 - x1, y2 - y1
 
-            # Discard whole-frame background false positives
+            # Ignore background false-positives
             if (box_w / w_img) > 0.65 and (box_h / h_img) > 0.65:
                 continue
 
@@ -77,7 +80,6 @@ if uploaded_file is not None:
             counts[matched_grade] += 1
             color = grade_colors[matched_grade]
 
-            # Draw box & label
             draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
             label = f" {matched_grade} {int(conf * 100)}% "
             draw.text((x1, max(y1 - 16, 0)), label, fill=color)
