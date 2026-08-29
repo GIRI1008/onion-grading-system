@@ -1,23 +1,8 @@
 import streamlit as st
+import os
+import gdown
 import numpy as np
-import torch
 from PIL import Image, ImageDraw
-
-# -------------------------------------------------------------
-# DIRECT FIX: Override Ultralytics internal loader
-# -------------------------------------------------------------
-import ultralytics.nn.tasks
-import ultralytics.utils.patches
-
-def custom_torch_safe_load(weight):
-    # Force weights_only=False to load full custom YOLO architecture
-    ckpt = torch.load(weight, map_location="cpu", weights_only=False)
-    return ckpt, weight
-
-ultralytics.nn.tasks.torch_safe_load = custom_torch_safe_load
-ultralytics.utils.patches.torch_load = lambda *args, **kwargs: torch.load(*args, **{**kwargs, "weights_only": False})
-# -------------------------------------------------------------
-
 from ultralytics import YOLO
 
 st.set_page_config(page_title="AgriLens: Onion Grading AI", page_icon="🧅", layout="centered")
@@ -25,16 +10,22 @@ st.set_page_config(page_title="AgriLens: Onion Grading AI", page_icon="🧅", la
 st.title("🧅 AgriLens: AI Multi-Grade Onion Scanner")
 st.caption("Smart India Hackathon 2026 | Automated 4-Tier Mandi Grading")
 
-@st.cache_resource
-def load_model():
-    return YOLO("best.pt")
+MODEL_PATH = "best_model.pt"
+GDRIVE_ID = "1Z7FimHPV8BNZPYa8jvBhwz87DF0EENV1"
 
-model = load_model()
+@st.cache_resource
+def load_trained_model():
+    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1_000_000:
+        url = f"https://drive.google.com/uc?id={GDRIVE_ID}"
+        gdown.download(url, MODEL_PATH, quiet=False)
+    return YOLO(MODEL_PATH)
+
+model = load_trained_model()
 
 grade_colors = {
-    "Grade A": (46, 204, 113),   # Green
+    "Grade A": (46, 204, 113),   # Emerald Green
     "Grade B": (52, 152, 219),   # Blue
-    "Grade C": (243, 156, 18),   # Orange
+    "Grade C": (243, 156, 18),   # Amber/Orange
     "Grade D (Rot/Reject)": (231, 76, 60) # Red
 }
 
@@ -43,13 +34,13 @@ uploaded_file = st.camera_input("Take a photo of onions") or st.file_uploader("O
 if uploaded_file is not None:
     img = Image.open(uploaded_file).convert("RGB")
     
-    # Resize keeping aspect ratio (max dimension 640)
+    # Scale image to max 640px
     w, h = img.size
     scale = min(640 / w, 640 / h)
     small_img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
     w_img, h_img = small_img.size
 
-    # YOLO Inference
+    # Run YOLOv8 detection
     results = model.predict(source=small_img, conf=0.35, iou=0.45, imgsz=320, verbose=False)[0]
 
     draw = ImageDraw.Draw(small_img)
@@ -60,19 +51,19 @@ if uploaded_file is not None:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             box_w, box_h = x2 - x1, y2 - y1
 
-            # Ignore background false-positives
+            # Ignore background false positives covering >65% of screen
             if (box_w / w_img) > 0.65 and (box_h / h_img) > 0.65:
                 continue
 
             cls_id = int(box.cls[0])
-            raw_name = results.names[cls_id]
+            raw_name = results.names[cls_id] if results.names else f"Grade {cls_id}"
             conf = float(box.conf[0])
 
-            if "a" in raw_name.lower() and "d" not in raw_name.lower():
+            if "a" in str(raw_name).lower() and "d" not in str(raw_name).lower():
                 matched_grade = "Grade A"
-            elif "b" in raw_name.lower():
+            elif "b" in str(raw_name).lower():
                 matched_grade = "Grade B"
-            elif "c" in raw_name.lower():
+            elif "c" in str(raw_name).lower():
                 matched_grade = "Grade C"
             else:
                 matched_grade = "Grade D (Rot/Reject)"
