@@ -1,6 +1,7 @@
 import streamlit as st
 import cv2
 import numpy as np
+import torch
 from PIL import Image
 from ultralytics import YOLO
 
@@ -11,14 +12,19 @@ st.caption("Smart India Hackathon 2026 | Automated 4-Tier Mandi Grading")
 
 @st.cache_resource
 def load_model():
+    # Bypass PyTorch 2.4+ safe load restriction for custom Ultralytics weights
+    try:
+        torch.serialization.add_safe_globals([YOLO])
+    except Exception:
+        pass
     return YOLO("best.pt")
 
 model = load_model()
 
 grade_colors = {
-    "Grade A": (46, 204, 113),   # Green
+    "Grade A": (46, 204, 113),   # Emerald Green
     "Grade B": (52, 152, 219),   # Blue
-    "Grade C": (243, 156, 18),   # Orange
+    "Grade C": (243, 156, 18),   # Amber/Orange
     "Grade D (Rot/Reject)": (231, 76, 60) # Red
 }
 
@@ -33,7 +39,7 @@ if uploaded_file is not None:
     small = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     h_img, w_img = small.shape[:2]
 
-    # Run inference
+    # Model inference
     results = model.predict(source=small, conf=0.35, iou=0.45, imgsz=320, verbose=False)[0]
 
     annotated = small.copy()
@@ -44,6 +50,7 @@ if uploaded_file is not None:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             box_w, box_h = x2 - x1, y2 - y1
 
+            # Ignore background detections taking >65% of screen
             if (box_w / w_img) > 0.65 and (box_h / h_img) > 0.65:
                 continue
 
