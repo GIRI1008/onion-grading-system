@@ -5,7 +5,12 @@ import numpy as np
 from PIL import Image, ImageDraw
 from ultralytics import YOLO
 
-st.set_page_config(page_title="AgriLens: Onion Grading AI", page_icon="🧅", layout="centered")
+st.set_page_config(
+    page_title="AgriLens: Onion Grading AI",
+    page_icon="🧅",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
 st.title("🧅 AgriLens: AI Multi-Grade Onion Scanner")
 st.caption("Smart India Hackathon 2026 | Automated 4-Tier Mandi Grading")
@@ -29,21 +34,46 @@ grade_colors = {
     "Grade D (Rot/Reject)": (231, 76, 60) # Red
 }
 
-uploaded_file = st.camera_input("Take a photo of onions") or st.file_uploader("Or upload an image", type=["jpg", "png", "jpeg"])
+# Sidebar controls to tune sensitivity during live testing
+with st.sidebar:
+    st.header("⚙️ Detection Settings")
+    conf_thresh = st.slider("Confidence Threshold", min_value=0.10, max_value=0.80, value=0.20, step=0.05)
+    iou_thresh = st.slider("IoU Overlap Threshold", min_value=0.10, max_value=0.70, value=0.40, step=0.05)
 
-if uploaded_file is not None:
-    img = Image.open(uploaded_file).convert("RGB")
+tab1, tab2 = st.tabs(["📸 Snap with Back Camera (Upload)", "🤳 Built-in Webcam"])
+
+with tab1:
+    st.info("💡 **Recommended for Mobile:** Tap below to open your phone's native **Rear/Back Camera**.")
+    uploaded_file = st.file_uploader(
+        "Take photo with camera or choose image", 
+        type=["jpg", "png", "jpeg"], 
+        key="file_upload"
+    )
+
+with tab2:
+    webcam_file = st.camera_input("Take a photo via browser webcam", key="webcam_input")
+
+target_file = uploaded_file or webcam_file
+
+if target_file is not None:
+    raw_img = Image.open(target_file).convert("RGB")
     
-    # Scale image to max 640px
-    w, h = img.size
+    # Resize keeping aspect ratio (max 640px)
+    w, h = raw_img.size
     scale = min(640 / w, 640 / h)
-    small_img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
-    w_img, h_img = small_img.size
+    img_resized = raw_img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+    w_img, h_img = img_resized.size
 
-    # Run YOLOv8 detection
-    results = model.predict(source=small_img, conf=0.35, iou=0.45, imgsz=320, verbose=False)[0]
+    # Run YOLOv8 detection with 640px resolution for high precision
+    results = model.predict(
+        source=img_resized,
+        conf=conf_thresh,
+        iou=iou_thresh,
+        imgsz=640,
+        verbose=False
+    )[0]
 
-    draw = ImageDraw.Draw(small_img)
+    draw = ImageDraw.Draw(img_resized)
     counts = {"Grade A": 0, "Grade B": 0, "Grade C": 0, "Grade D (Rot/Reject)": 0}
 
     if len(results.boxes) > 0:
@@ -51,22 +81,28 @@ if uploaded_file is not None:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             box_w, box_h = x2 - x1, y2 - y1
 
-            # Ignore background false positives covering >65% of screen
-            if (box_w / w_img) > 0.65 and (box_h / h_img) > 0.65:
+            # Ignore false-positive boxes covering >90% of entire frame
+            if (box_w / w_img) > 0.90 and (box_h / h_img) > 0.90:
                 continue
 
             cls_id = int(box.cls[0])
-            raw_name = results.names[cls_id] if results.names else f"Grade {cls_id}"
+            raw_name = results.names.get(cls_id, f"Grade {cls_id}") if hasattr(results, "names") else f"Grade {cls_id}"
             conf = float(box.conf[0])
+            name_str = str(raw_name).lower().strip()
 
-            if "a" in str(raw_name).lower() and "d" not in str(raw_name).lower():
+            # Robust 4-tier class categorization
+            if "a" in name_str and "d" not in name_str:
                 matched_grade = "Grade A"
-            elif "b" in str(raw_name).lower():
+            elif "b" in name_str:
                 matched_grade = "Grade B"
-            elif "c" in str(raw_name).lower():
+            elif "c" in name_str:
                 matched_grade = "Grade C"
-            else:
+            elif "d" in name_str or "rot" in name_str or "reject" in name_str:
                 matched_grade = "Grade D (Rot/Reject)"
+            else:
+                # Fallback based on class index if names are numeric (0=A, 1=B, 2=C, 3=D)
+                mapping = {0: "Grade A", 1: "Grade B", 2: "Grade C", 3: "Grade D (Rot/Reject)"}
+                matched_grade = mapping.get(cls_id, "Grade A")
 
             counts[matched_grade] += 1
             color = grade_colors[matched_grade]
@@ -75,7 +111,7 @@ if uploaded_file is not None:
             label = f" {matched_grade} {int(conf * 100)}% "
             draw.text((x1, max(y1 - 16, 0)), label, fill=color)
 
-    st.image(small_img, caption="4-Tier Detection Overlay", use_container_width=True)
+    st.image(img_resized, caption="4-Tier Detection Overlay", use_container_width=True)
 
     total = sum(counts.values())
     if total > 0:
@@ -95,4 +131,4 @@ if uploaded_file is not None:
 | 🔴 **Grade D** | Rot / Sprouted / Reject | **{counts['Grade D (Rot/Reject)']}** | **Discard / Isolate immediately** |
         """)
     else:
-        st.warning("No onions detected in the frame. Point camera closer to the bulbs.")
+        st.warning("⚠️ No onions detected. Try adjusting the 'Confidence Threshold' slider in the left sidebar or move camera closer.")
